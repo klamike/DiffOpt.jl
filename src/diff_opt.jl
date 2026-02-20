@@ -32,6 +32,7 @@ Base.@kwdef mutable struct InputCache
         MOIDD.DoubleDict{MOI.VectorAffineFunction{Float64}}() # also includes G for QPs
     objective::Union{Nothing,MOI.AbstractScalarFunction} = nothing
     factorization::Union{Nothing,Function} = nothing
+    allow_objective_and_solution_input::Bool = false
 end
 
 function Base.empty!(cache::InputCache)
@@ -123,6 +124,8 @@ MOI.set(model, DiffOpt.NonLinearKKTJacobianFactorization(), factorization)
 ```
 """
 struct NonLinearKKTJacobianFactorization <: MOI.AbstractModelAttribute end
+
+struct AllowObjectiveAndSolutionInput <: MOI.AbstractModelAttribute end
 
 """
     ForwardConstraintFunction <: MOI.AbstractConstraintAttribute
@@ -439,6 +442,15 @@ function MOI.set(
     factorization::Function,
 )
     model.input_cache.factorization = factorization
+    return
+end
+
+function MOI.set(
+    model::AbstractModel,
+    ::AllowObjectiveAndSolutionInput,
+    allow::Bool,
+)
+    model.input_cache.allow_objective_and_solution_input = allow
     return
 end
 
