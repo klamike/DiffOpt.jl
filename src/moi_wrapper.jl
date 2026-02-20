@@ -573,6 +573,9 @@ function reverse_differentiate!(model::Optimizer)
     for (vi, value) in model.input_cache.dy
         MOI.set(diff, ReverseConstraintDual(), model.index_map[vi], value)
     end
+    for (vi, value) in model.input_cache.dy_vno
+        MOI.set(diff, ReverseConstraintDual(), model.index_map[vi], value)
+    end
     if !iszero(model.input_cache.dobj)
         MOI.set(diff, ReverseObjectiveSensitivity(), model.input_cache.dobj)
     end
@@ -889,6 +892,16 @@ function MOI.set(
     val,
 )
     model.input_cache.dy[ci] = val
+    return
+end
+
+function MOI.set(
+    model::Optimizer,
+    ::ReverseConstraintDual,
+    ci::MOI.ConstraintIndex{F,<:MOI.VectorNonlinearOracle},
+    val::AbstractVector{Float64},
+) where {F}
+    model.input_cache.dy_vno[ci] = val
     return
 end
 

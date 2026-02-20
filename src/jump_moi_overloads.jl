@@ -62,8 +62,7 @@ function MOI.get(
     con_ref::JuMP.ConstraintRef,
 )
     JuMP.check_belongs_to_model(con_ref, model)
-    moi_func = MOI.get(JuMP.backend(model), attr, JuMP.index(con_ref))
-    return JuMP.jump_function(model, moi_func)
+    return _moi_get_result(JuMP.backend(model), attr, JuMP.index(con_ref))
 end
 
 function MOI.get(model::JuMP.Model, attr::ReverseObjectiveFunction)

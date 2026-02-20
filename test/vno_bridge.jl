@@ -640,6 +640,216 @@ function test_VectorNonlinearOracle_bridge_utility_paths()
     @test isempty(mock.dual_start)
 end
 
+function _vno_oracle_from_jump(f_builder, n_in::Int, l, u)
+    n_out = length(l)
+    m_tmp = Model()
+    nlm = MOI.Nonlinear.Model()
+    z = @variable(m_tmp, [1:n_in])
+    snfs = JuMP.moi_function.(f_builder(z))
+    for snf in snfs
+        MOI.Nonlinear.add_constraint(nlm, snf, MOI.EqualTo(0.0))
+    end
+    ev = MOI.Nonlinear.SymbolicAD.Evaluator(nlm, MOI.VariableIndex.(1:n_in))
+    MOI.initialize(ev, [:Jac, :Hess])
+    return MOI.VectorNonlinearOracle(;
+        dimension = n_out, l = l, u = u,
+        eval_f = (ret, z) -> MOI.eval_constraint(ev, ret, z),
+        jacobian_structure = MOI.jacobian_structure(ev),
+        eval_jacobian = (ret, z) -> MOI.eval_constraint_jacobian(ev, ret, z),
+        hessian_lagrangian_structure = MOI.hessian_lagrangian_structure(ev),
+        eval_hessian_lagrangian = (ret, z, μ) -> MOI.eval_hessian_lagrangian(ev, ret, z, 0.0, μ),
+    )
+end
+
+function test_VectorNonlinearOracle_ForwardConstraintDual()
+    p_val = 0.5
+    eq_val = 0.05
+    x_star = sqrt(eq_val)
+    Δp = 0.1
+    expected_dλ = -Δp / x_star  # ≈ -0.4472
+
+    m_nl = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_nl)
+    @variable(m_nl, x_nl >= 0, start = x_star)
+    @variable(m_nl, p_nl in Parameter(p_val))
+    @constraint(m_nl, c_nl, x_nl^2 == eq_val)
+    @objective(m_nl, Min, (x_nl - p_nl)^2)
+    optimize!(m_nl)
+    @test is_solved_and_feasible(m_nl)
+    @test value(x_nl) ≈ x_star atol = 1e-5
+
+    DiffOpt.empty_input_sensitivities!(m_nl)
+    DiffOpt.set_forward_parameter(m_nl, p_nl, Δp)
+    DiffOpt.forward_differentiate!(m_nl)
+    dλ_nl = MOI.get(m_nl, DiffOpt.ForwardConstraintDual(), c_nl)
+    @test dλ_nl isa Float64
+    @test isapprox(dλ_nl, expected_dλ; atol = 1e-4)
+
+    oracle = _vno_oracle_from_jump(z -> [z[1]^2], 1, [eq_val], [eq_val])
+    m_vno = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_vno)
+    @variable(m_vno, x_vno >= 0, start = x_star)
+    @variable(m_vno, p_vno in Parameter(p_val))
+    @constraint(m_vno, c_vno, [x_vno] in oracle)
+    @objective(m_vno, Min, (x_vno - p_vno)^2)
+    optimize!(m_vno)
+    @test is_solved_and_feasible(m_vno)
+    @test value(x_vno) ≈ x_star atol = 1e-5
+
+    DiffOpt.empty_input_sensitivities!(m_vno)
+    DiffOpt.set_forward_parameter(m_vno, p_vno, Δp)
+    DiffOpt.forward_differentiate!(m_vno)
+    dλ_vno = MOI.get(m_vno, DiffOpt.ForwardConstraintDual(), c_vno)
+    @test dλ_vno isa Vector{Float64}
+    @test length(dλ_vno) == 1
+    @test isapprox(dλ_vno[1], dλ_nl; atol = 1e-4)
+    @test isapprox(dλ_vno[1], expected_dλ; atol = 1e-4)
+end
+
+function test_VectorNonlinearOracle_ReverseConstraintDual()
+    p_val = 0.5
+    eq_val = 0.05
+    x_star = sqrt(eq_val)
+    seed = 1.0
+    expected_dp = -seed / x_star  # ≈ -4.472
+
+    m_nl = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_nl)
+    @variable(m_nl, x_nl >= 0, start = x_star)
+    @variable(m_nl, p_nl in Parameter(p_val))
+    @constraint(m_nl, c_nl, x_nl^2 == eq_val)
+    @objective(m_nl, Min, (x_nl - p_nl)^2)
+    optimize!(m_nl)
+    @assert is_solved_and_feasible(m_nl)
+
+    DiffOpt.empty_input_sensitivities!(m_nl)
+    MOI.set(m_nl, DiffOpt.ReverseConstraintDual(), c_nl, seed)
+    DiffOpt.reverse_differentiate!(m_nl)
+    dp_nl = MOI.get(m_nl, DiffOpt.ReverseConstraintSet(), ParameterRef(p_nl)).value
+    @test isapprox(dp_nl, expected_dp; atol = 1e-4)
+
+    oracle = _vno_oracle_from_jump(z -> [z[1]^2], 1, [eq_val], [eq_val])
+    m_vno = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_vno)
+    @variable(m_vno, x_vno >= 0, start = x_star)
+    @variable(m_vno, p_vno in Parameter(p_val))
+    @constraint(m_vno, c_vno, [x_vno] in oracle)
+    @objective(m_vno, Min, (x_vno - p_vno)^2)
+    optimize!(m_vno)
+    @assert is_solved_and_feasible(m_vno)
+
+    DiffOpt.empty_input_sensitivities!(m_vno)
+    MOI.set(m_vno, DiffOpt.ReverseConstraintDual(), c_vno, [seed])
+    DiffOpt.reverse_differentiate!(m_vno)
+    dp_vno = MOI.get(m_vno, DiffOpt.ReverseConstraintSet(), ParameterRef(p_vno)).value
+    @test isapprox(dp_vno, dp_nl; atol = 1e-4)
+    @test isapprox(dp_vno, expected_dp; atol = 1e-4)
+end
+
+function test_VectorNonlinearOracle_ForwardReverseConstraintDual_leq()
+    p_val = 0.5
+    ub = 0.04
+    x_star = sqrt(ub)
+    Δp = 0.1
+    seed = 1.0
+
+    m_nl = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_nl)
+    @variable(m_nl, x_nl >= 0, start = x_star)
+    @variable(m_nl, p_nl in Parameter(p_val))
+    @constraint(m_nl, c_nl, x_nl^2 <= ub)
+    @objective(m_nl, Min, (x_nl - p_nl)^2)
+    optimize!(m_nl)
+    @assert is_solved_and_feasible(m_nl)
+    @test value(x_nl) ≈ x_star atol = 1e-5
+
+    DiffOpt.empty_input_sensitivities!(m_nl)
+    DiffOpt.set_forward_parameter(m_nl, p_nl, Δp)
+    DiffOpt.forward_differentiate!(m_nl)
+    dλ_nl = MOI.get(m_nl, DiffOpt.ForwardConstraintDual(), c_nl)
+
+    DiffOpt.empty_input_sensitivities!(m_nl)
+    MOI.set(m_nl, DiffOpt.ReverseConstraintDual(), c_nl, seed)
+    DiffOpt.reverse_differentiate!(m_nl)
+    dp_nl = MOI.get(m_nl, DiffOpt.ReverseConstraintSet(), ParameterRef(p_nl)).value
+
+    oracle = _vno_oracle_from_jump(z -> [z[1]^2], 1, [-Inf], [ub])
+    m_vno = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_vno)
+    @variable(m_vno, x_vno >= 0, start = x_star)
+    @variable(m_vno, p_vno in Parameter(p_val))
+    @constraint(m_vno, c_vno, [x_vno] in oracle)
+    @objective(m_vno, Min, (x_vno - p_vno)^2)
+    optimize!(m_vno)
+    @assert is_solved_and_feasible(m_vno)
+    @test value(x_vno) ≈ x_star atol = 1e-5
+
+    DiffOpt.empty_input_sensitivities!(m_vno)
+    DiffOpt.set_forward_parameter(m_vno, p_vno, Δp)
+    DiffOpt.forward_differentiate!(m_vno)
+    dλ_vno = MOI.get(m_vno, DiffOpt.ForwardConstraintDual(), c_vno)
+    @test dλ_vno isa Vector{Float64}
+    @test isapprox(dλ_vno[1], dλ_nl; atol = 1e-4)
+
+    DiffOpt.empty_input_sensitivities!(m_vno)
+    MOI.set(m_vno, DiffOpt.ReverseConstraintDual(), c_vno, [seed])
+    DiffOpt.reverse_differentiate!(m_vno)
+    dp_vno = MOI.get(m_vno, DiffOpt.ReverseConstraintSet(), ParameterRef(p_vno)).value
+    @test isapprox(dp_vno, dp_nl; atol = 1e-4)
+end
+
+function test_VectorNonlinearOracle_ForwardReverseConstraintDual_geq()
+    p_val = 0.2
+    lb = 0.25
+    x_star = sqrt(lb)
+    Δp = 0.1
+    seed = 1.0
+
+    m_nl = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_nl)
+    @variable(m_nl, x_nl >= 0, start = x_star)
+    @variable(m_nl, p_nl in Parameter(p_val))
+    @constraint(m_nl, c_nl, x_nl^2 >= lb)
+    @objective(m_nl, Min, (x_nl - p_nl)^2)
+    optimize!(m_nl)
+    @assert is_solved_and_feasible(m_nl)
+    @test value(x_nl) ≈ x_star atol = 1e-5
+
+    DiffOpt.empty_input_sensitivities!(m_nl)
+    DiffOpt.set_forward_parameter(m_nl, p_nl, Δp)
+    DiffOpt.forward_differentiate!(m_nl)
+    dλ_nl = MOI.get(m_nl, DiffOpt.ForwardConstraintDual(), c_nl)
+
+    DiffOpt.empty_input_sensitivities!(m_nl)
+    MOI.set(m_nl, DiffOpt.ReverseConstraintDual(), c_nl, seed)
+    DiffOpt.reverse_differentiate!(m_nl)
+    dp_nl = MOI.get(m_nl, DiffOpt.ReverseConstraintSet(), ParameterRef(p_nl)).value
+
+    oracle = _vno_oracle_from_jump(z -> [z[1]^2], 1, [lb], [Inf])
+    m_vno = DiffOpt.nonlinear_diff_model(Ipopt.Optimizer)
+    set_silent(m_vno)
+    @variable(m_vno, x_vno >= 0, start = x_star)
+    @variable(m_vno, p_vno in Parameter(p_val))
+    @constraint(m_vno, c_vno, [x_vno] in oracle)
+    @objective(m_vno, Min, (x_vno - p_vno)^2)
+    optimize!(m_vno)
+    @assert is_solved_and_feasible(m_vno)
+    @test value(x_vno) ≈ x_star atol = 1e-5
+
+    DiffOpt.empty_input_sensitivities!(m_vno)
+    DiffOpt.set_forward_parameter(m_vno, p_vno, Δp)
+    DiffOpt.forward_differentiate!(m_vno)
+    dλ_vno = MOI.get(m_vno, DiffOpt.ForwardConstraintDual(), c_vno)
+    @test dλ_vno isa Vector{Float64}
+    @test isapprox(dλ_vno[1], dλ_nl; atol = 1e-4)
+
+    DiffOpt.empty_input_sensitivities!(m_vno)
+    MOI.set(m_vno, DiffOpt.ReverseConstraintDual(), c_vno, [seed])
+    DiffOpt.reverse_differentiate!(m_vno)
+    dp_vno = MOI.get(m_vno, DiffOpt.ReverseConstraintSet(), ParameterRef(p_vno)).value
+    @test isapprox(dp_vno, dp_nl; atol = 1e-4)
+end
+
 end
 
 TestVNOBridge.runtests()

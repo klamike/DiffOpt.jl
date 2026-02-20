@@ -505,3 +505,75 @@ function _set_duals_from_output_duals!(
     end
     return
 end
+
+function MOI.get(
+    model::MOI.ModelLike,
+    ::DiffOpt.ForwardConstraintDual,
+    b::VNOToScalarNLBridge{T},
+) where {T}
+    m = b.s.output_dimension
+    result = zeros(T, m)
+
+    leq_idx = 1
+    geq_idx = 1
+    eq_idx = 1
+
+    for i in 1:m
+        li = b.s.l[i]
+        ui = b.s.u[i]
+
+        if isfinite(li) && isfinite(ui) && li == ui
+            if eq_idx <= length(b.eq)
+                result[i] = MOI.get(model, DiffOpt.ForwardConstraintDual(), b.eq[eq_idx])
+                eq_idx += 1
+            end
+        else
+            if isfinite(li) && geq_idx <= length(b.geq)
+                result[i] += MOI.get(model, DiffOpt.ForwardConstraintDual(), b.geq[geq_idx])
+                geq_idx += 1
+            end
+            if isfinite(ui) && leq_idx <= length(b.leq)
+                result[i] += MOI.get(model, DiffOpt.ForwardConstraintDual(), b.leq[leq_idx])
+                leq_idx += 1
+            end
+        end
+    end
+
+    return result
+end
+
+function MOI.set(
+    model::MOI.ModelLike,
+    ::DiffOpt.ReverseConstraintDual,
+    b::VNOToScalarNLBridge{T},
+    value::AbstractVector,
+) where {T}
+    m = b.s.output_dimension
+    @assert length(value) == m
+
+    leq_idx = 1
+    geq_idx = 1
+    eq_idx = 1
+
+    for i in 1:m
+        li = b.s.l[i]
+        ui = b.s.u[i]
+
+        if isfinite(li) && isfinite(ui) && li == ui
+            if eq_idx <= length(b.eq)
+                MOI.set(model, DiffOpt.ReverseConstraintDual(), b.eq[eq_idx], value[i])
+                eq_idx += 1
+            end
+        else
+            if isfinite(li) && geq_idx <= length(b.geq)
+                MOI.set(model, DiffOpt.ReverseConstraintDual(), b.geq[geq_idx], value[i])
+                geq_idx += 1
+            end
+            if isfinite(ui) && leq_idx <= length(b.leq)
+                MOI.set(model, DiffOpt.ReverseConstraintDual(), b.leq[leq_idx], value[i])
+                leq_idx += 1
+            end
+        end
+    end
+    return
+end

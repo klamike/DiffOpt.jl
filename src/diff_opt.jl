@@ -14,6 +14,7 @@ const MOIDD = MOI.Utilities.DoubleDicts
 Base.@kwdef mutable struct InputCache
     dx::Dict{MOI.VariableIndex,Float64} = Dict{MOI.VariableIndex,Float64}()# dz for QP
     dy::Dict{MOI.ConstraintIndex,Float64} = Dict{MOI.ConstraintIndex,Float64}()
+    dy_vno::Dict{MOI.ConstraintIndex,Vector{Float64}} = Dict{MOI.ConstraintIndex,Vector{Float64}}()
     # Dual sensitivity currently only works for NonLinearProgram
     dobj::Float64 = 0.0 # Objective input sensitivity for reverse differentiation
     # ds
@@ -36,6 +37,7 @@ end
 function Base.empty!(cache::InputCache)
     empty!(cache.dx)
     empty!(cache.dy)
+    empty!(cache.dy_vno)
     cache.dobj = 0.0
     empty!(cache.parameter_constraints)
     empty!(cache.scalar_constraints)
