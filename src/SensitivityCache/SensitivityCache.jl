@@ -32,12 +32,14 @@ mutable struct Optimizer{OT} <: MOI.AbstractOptimizer
 
     # Forward input: ForwardConstraintFunction (set via MOI chain)
     scalar_constraints::MOIDD.DoubleDict{MOI.ScalarAffineFunction{Float64}}
+    objective::Union{Nothing,MOI.AbstractScalarFunction}
 
     # Reverse input: ReverseVariablePrimal (set via MOI chain)
     dx::Dict{MOI.VariableIndex,Float64}
 
     # Forward output
     forw_dx::Union{Nothing,Dict{MOI.VariableIndex,Float64}}
+    forw_dy::Union{Nothing,Dict{MOI.ConstraintIndex,Float64}}
 
     # Reverse output
     back_db::Union{Nothing,Dict{MOI.ConstraintIndex,Float64}}
@@ -49,7 +51,9 @@ function Optimizer(optimizer)
     return Optimizer(
         optimizer,
         MOIDD.DoubleDict{MOI.ScalarAffineFunction{Float64}}(),
+        nothing,
         Dict{MOI.VariableIndex,Float64}(),
+        nothing,
         nothing,
         nothing,
         NaN,
@@ -69,8 +73,10 @@ end
 function MOI.empty!(s::Optimizer)
     MOI.empty!(s.optimizer)
     empty!(s.scalar_constraints)
+    s.objective = nothing
     empty!(s.dx)
     s.forw_dx = nothing
+    s.forw_dy = nothing
     s.back_db = nothing
     s.diff_time = NaN
     return
@@ -93,6 +99,8 @@ end
 function MOI.supports(s::Optimizer, attr::MOI.AbstractModelAttribute)
     return MOI.supports(s.optimizer, attr)
 end
+
+MOI.supports(::Optimizer, ::DiffOpt.ForwardObjectiveFunction) = true
 
 # ============================================================================
 # MOI passthrough: optimizer attributes
@@ -243,6 +251,11 @@ function MOI.set(
     return
 end
 
+function MOI.set(s::Optimizer, ::DiffOpt.ForwardObjectiveFunction, objective)
+    s.objective = objective
+    return
+end
+
 function MOI.set(
     s::Optimizer,
     ::DiffOpt.ReverseVariablePrimal,
@@ -264,6 +277,15 @@ function MOI.get(
 )
     s.forw_dx === nothing && return 0.0
     return get(s.forw_dx, vi, 0.0)
+end
+
+function MOI.get(
+    s::Optimizer,
+    ::DiffOpt.ForwardConstraintDual,
+    ci::MOI.ConstraintIndex,
+)
+    s.forw_dy === nothing && return 0.0
+    return get(s.forw_dy, ci, 0.0)
 end
 
 MOI.get(s::Optimizer, ::DiffOpt.DifferentiateTimeSec) = s.diff_time
@@ -317,6 +339,17 @@ function DiffOpt.forward_differentiate!(s::Optimizer)
         else
             s.forw_dx = Dict{MOI.VariableIndex,Float64}()
         end
+
+        # Dual sensitivity: dλ = B⁻ᵀ dc_B
+        s.forw_dy = nothing
+        if s.objective !== nothing
+            dc = Dict{MOI.VariableIndex,Float64}()
+            for term in s.objective.terms
+                dc[term.variable] =
+                    get(dc, term.variable, 0.0) + term.coefficient
+            end
+            s.forw_dy = BLP._basis_transpose_solve(s.optimizer, dc)
+        end
     end
     return
 end
@@ -342,8 +375,10 @@ end
 
 function DiffOpt.empty_input_sensitivities!(s::Optimizer)
     empty!(s.scalar_constraints)
+    s.objective = nothing
     empty!(s.dx)
     s.forw_dx = nothing
+    s.forw_dy = nothing
     s.back_db = nothing
     return
 end

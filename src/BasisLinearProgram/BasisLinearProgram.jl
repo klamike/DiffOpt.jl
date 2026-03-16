@@ -109,11 +109,13 @@ mutable struct GeneralModel <: DiffOpt.AbstractModel
     # Basis (computed at differentiate time)
     B_lu::Union{Nothing,LinearAlgebra.LU}
     basic_structural::Vector{Int}  # which columns of A are basic structural vars
+    col_to_basic::Dict{Int,Int}    # column idx to basis idx
     slack_basic::Vector{Int}       # which rows have basic slacks
 
     # Sensitivity I/O
     input_cache::DiffOpt.InputCache
     forw_dx::Union{Nothing,Dict{MOI.VariableIndex,Float64}}
+    forw_dy::Union{Nothing,Dict{MOI.ConstraintIndex,Float64}}
     back_db::Union{Nothing,Dict{MOI.ConstraintIndex,Float64}}
 
     # Solution vectors (populated by _copy_dual)
@@ -137,8 +139,10 @@ function GeneralModel()
         Dict{MOI.ConstraintIndex,Int}(),
         nothing,
         Int[],
+        Dict{Int,Int}(),
         Int[],
         DiffOpt.InputCache(),
+        nothing,
         nothing,
         nothing,
         Float64[],
@@ -164,9 +168,11 @@ function MOI.empty!(model::GeneralModel)
     empty!(model.ci_to_row)
     model.B_lu = nothing
     empty!(model.basic_structural)
+    empty!(model.col_to_basic)
     empty!(model.slack_basic)
     empty!(model.input_cache)
     model.forw_dx = nothing
+    model.forw_dy = nothing
     model.back_db = nothing
     empty!(model.x)
     empty!(model.λ)
@@ -330,6 +336,15 @@ function MOI.get(
     return get(model.forw_dx, vi, 0.0)
 end
 
+function MOI.get(
+    model::GeneralModel,
+    ::DiffOpt.ForwardConstraintDual,
+    ci::MOI.ConstraintIndex,
+)
+    model.forw_dy === nothing && return 0.0
+    return get(model.forw_dy, ci, 0.0)
+end
+
 function MOI.get(model::GeneralModel, ::DiffOpt.ReverseObjectiveFunction)
     return DiffOpt.VectorScalarAffineFunction(zeros(length(model.x)), 0.0)
 end
@@ -426,10 +441,12 @@ function _validate_basis!(model::GeneralModel)
 
     # Determine basic structural variables
     empty!(model.basic_structural)
+    empty!(model.col_to_basic)
     for (j, vi) in enumerate(model.vi_list)
         status = get(model.var_basis_status, vi, MOI.NONBASIC)
         if status == MOI.BASIC
             push!(model.basic_structural, j)
+            model.col_to_basic[j] = length(model.basic_structural)
         end
     end
 

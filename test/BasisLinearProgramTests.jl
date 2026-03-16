@@ -470,6 +470,57 @@ function _test_reverse_empty_inputs(both_models)
     end
 end
 
+function _test_forward_dual_sensitivity_simple(both_models)
+    # min -x + c_y*y, s.t. x + y <= 5, x, y >= 0, c_y=-2
+    # Optimal: x=0, y=5 (y basic). B=[1] (coeff of y in constraint).
+    # Perturb c_y by 1: dc_B = [1] (y is basic), dλ = B⁻ᵀ [1] = 1
+    for create_fn in both_models
+        model = create_fn()
+        @variable(model, x >= 0)
+        @variable(model, y >= 0)
+        @variable(model, c_y in Parameter(-2.0))
+        @constraint(model, c, x + y <= 5.0)
+        @objective(model, Min, -x + c_y * y)
+        optimize!(model)
+
+        @test value(x) ≈ 0.0 atol = ATOL
+        @test value(y) ≈ 5.0 atol = ATOL
+
+        DiffOpt.set_forward_parameter(model, c_y, 1.0)
+        DiffOpt.forward_differentiate!(model)
+        dλ = MOI.get(model, DiffOpt.ForwardConstraintDual(), c)
+        @test dλ ≈ 1.0 atol = ATOL
+    end
+end
+
+function _test_forward_dual_sensitivity_two_constraints(both_models)
+    # min c_x*x + 2y, s.t. x + y >= 5, 2x + y >= 8, x, y >= 0, c_x=3
+    # Optimal: x=3, y=2 (both binding, both basic structural)
+    # B = [1 1; 2 1], B⁻ᵀ = [-1 2; 1 -1]
+    # Perturb c_x by 1 (dc_B = [1, 0]):
+    #   dλ = B⁻ᵀ [1; 0] = [-1; 1]
+    for create_fn in both_models
+        model = create_fn()
+        @variable(model, x >= 0)
+        @variable(model, y >= 0)
+        @variable(model, c_x in Parameter(3.0))
+        @constraint(model, c1, x + y >= 5.0)
+        @constraint(model, c2, 2x + y >= 8.0)
+        @objective(model, Min, c_x * x + 2y)
+        optimize!(model)
+
+        @test value(x) ≈ 3.0 atol = ATOL
+        @test value(y) ≈ 2.0 atol = ATOL
+
+        DiffOpt.set_forward_parameter(model, c_x, 1.0)
+        DiffOpt.forward_differentiate!(model)
+        dλ1 = MOI.get(model, DiffOpt.ForwardConstraintDual(), c1)
+        dλ2 = MOI.get(model, DiffOpt.ForwardConstraintDual(), c2)
+        @test dλ1 ≈ -1.0 atol = ATOL
+        @test dλ2 ≈ 1.0 atol = ATOL
+    end
+end
+
 # ============================================================================
 # Entry point: run all shared tests
 # ============================================================================

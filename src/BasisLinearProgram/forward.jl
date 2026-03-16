@@ -36,6 +36,20 @@ function DiffOpt.forward_differentiate!(model::GeneralModel)
         for (k, col) in enumerate(model.basic_structural)
             model.forw_dx[model.vi_list[col]] = dx_B[k]
         end
+
+        # 4. Dual sensitivity: dλ = B⁻ᵀ dc_B
+        model.forw_dy = nothing
+        if model.input_cache.objective !== nothing
+            dc_B = zeros(m)
+            for term in model.input_cache.objective.terms
+                k = get(model.col_to_basic, get(model.vi_to_col, term.variable, 0), 0)
+                k > 0 && (dc_B[k] = term.coefficient)
+            end
+            dλ = model.B_lu' \ dc_B
+            model.forw_dy = Dict{MOI.ConstraintIndex,Float64}(
+                ci => dλ[i] for (i, ci) in enumerate(model.ci_list)
+            )
+        end
     end
     return
 end
