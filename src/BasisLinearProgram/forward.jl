@@ -40,15 +40,39 @@ function DiffOpt.forward_differentiate!(model::GeneralModel)
         # 4. Dual sensitivity: dλ = B⁻ᵀ dc_B
         model.forw_dy = nothing
         if model.input_cache.objective !== nothing
-            dc_B = zeros(m)
+            n = length(model.vi_list)
+            dc = zeros(n)
             for term in model.input_cache.objective.terms
-                k = get(model.col_to_basic, get(model.vi_to_col, term.variable, 0), 0)
-                k > 0 && (dc_B[k] = term.coefficient)
+                col = get(model.vi_to_col, term.variable, 0)
+                if col > 0
+                    dc[col] = term.coefficient
+                end
+            end
+            dc_B = zeros(m)
+            for (k, col) in enumerate(model.basic_structural)
+                dc_B[k] = dc[col]
             end
             dλ = model.B_lu' \ dc_B
-            model.forw_dy = Dict{MOI.ConstraintIndex,Float64}(
-                ci => dλ[i] for (i, ci) in enumerate(model.ci_list)
-            )
+            model.forw_dy = Dict{MOI.ConstraintIndex,Float64}()
+            for (i, ci) in enumerate(model.ci_list)
+                model.forw_dy[ci] = dλ[i]
+            end
+            # d(rc_j) = dc_j - a_j' * dλ
+            inner = model.model
+            for (F, S) in MOI.get(inner, MOI.ListOfConstraintTypesPresent())
+                F == MOI.VariableIndex || continue
+                for ci in MOI.get(inner, MOI.ListOfConstraintIndices{F,S}())
+                    vi = MOI.VariableIndex(ci.value)
+                    col = get(model.vi_to_col, vi, 0)
+                    col == 0 && continue
+                    haskey(model.col_to_basic, col) && continue
+                    drc = dc[col]
+                    for i in 1:m
+                        drc -= model.A[i, col] * dλ[i]
+                    end
+                    model.forw_dy[ci] = drc
+                end
+            end
         end
     end
     return

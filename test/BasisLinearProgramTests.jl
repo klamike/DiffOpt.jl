@@ -521,6 +521,49 @@ function _test_forward_dual_sensitivity_two_constraints(both_models)
     end
 end
 
+function _test_forward_dual_sensitivity_variable_bounds(both_models)
+    # min c_x*x + y, s.t. x + y == 10, x >= 1, y >= 2, c_x=4
+    # Optimal: x=1, y=9 (x at lower bound, y basic with equality)
+    # Dual of equality: λ = 1 (shadow price)
+    # Reduced cost of x: rc_x = c_x - 1*λ = 4 - 1 = 3
+    # Perturb c_x by 1: dλ = 0 (x not basic), d(rc_x) = 1 - 0 = 1
+    for create_fn in both_models
+        model = create_fn()
+        @variable(model, x >= 1)
+        @variable(model, y >= 2)
+        @variable(model, c_x in Parameter(4.0))
+        @constraint(model, cons, x + y == 10)
+        @objective(model, Min, c_x * x + y)
+        optimize!(model)
+
+        @test value(x) ≈ 1.0 atol = ATOL
+        @test value(y) ≈ 9.0 atol = ATOL
+
+        DiffOpt.set_forward_parameter(model, c_x, 1.0)
+        DiffOpt.forward_differentiate!(model)
+
+        # Shadow price sensitivity: dλ = 0 (x not in basis)
+        dλ = MOI.get(model, DiffOpt.ForwardConstraintDual(), cons)
+        @test dλ ≈ 0.0 atol = ATOL
+
+        # Reduced cost sensitivity for x's lower bound: d(rc) = 1
+        drc_x = MOI.get(
+            model,
+            DiffOpt.ForwardConstraintDual(),
+            JuMP.LowerBoundRef(x),
+        )
+        @test drc_x ≈ 1.0 atol = ATOL
+
+        # y is basic, so its lower bound dual sensitivity is 0
+        drc_y = MOI.get(
+            model,
+            DiffOpt.ForwardConstraintDual(),
+            JuMP.LowerBoundRef(y),
+        )
+        @test drc_y ≈ 0.0 atol = ATOL
+    end
+end
+
 # ============================================================================
 # Entry point: run all shared tests
 # ============================================================================

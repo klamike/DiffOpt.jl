@@ -67,7 +67,15 @@ end
 MOI.optimize!(s::Optimizer) = MOI.optimize!(s.optimizer)
 
 function MOI.copy_to(s::Optimizer, src::MOI.ModelLike)
-    return MOI.copy_to(s.optimizer, src)
+    filtered = MOI.Utilities.ModelFilter(src) do item
+        return !(
+            item isa DiffOpt.NonLinearKKTJacobianFactorization ||
+            item isa DiffOpt.AllowObjectiveAndSolutionInput ||
+            item isa DiffOpt.ForwardObjectiveFunction ||
+            item isa DiffOpt.ForwardConstraintFunction
+        )
+    end
+    return MOI.copy_to(s.optimizer, filtered)
 end
 
 function MOI.empty!(s::Optimizer)
@@ -101,6 +109,8 @@ function MOI.supports(s::Optimizer, attr::MOI.AbstractModelAttribute)
 end
 
 MOI.supports(::Optimizer, ::DiffOpt.ForwardObjectiveFunction) = true
+MOI.supports(::Optimizer, ::DiffOpt.NonLinearKKTJacobianFactorization) = true
+MOI.supports(::Optimizer, ::DiffOpt.AllowObjectiveAndSolutionInput) = true
 
 # ============================================================================
 # MOI passthrough: optimizer attributes
@@ -348,7 +358,36 @@ function DiffOpt.forward_differentiate!(s::Optimizer)
                 dc[term.variable] =
                     get(dc, term.variable, 0.0) + term.coefficient
             end
+
+            # dλ = B⁻ᵀ dc_B
             s.forw_dy = BLP._basis_transpose_solve(s.optimizer, dc)
+
+            # d(rc_j) = dc_j - (A' dλ)_j
+            At_dλ = Dict{MOI.VariableIndex,Float64}()
+            for (saf_ci, dλ_val) in s.forw_dy
+                func = MOI.get(
+                    s.optimizer,
+                    MOI.ConstraintFunction(),
+                    saf_ci,
+                )
+                for term in func.terms
+                    At_dλ[term.variable] = get(At_dλ, term.variable, 0.0) +
+                                           term.coefficient * dλ_val
+                end
+            end
+            for (F, S) in
+                MOI.get(s.optimizer, MOI.ListOfConstraintTypesPresent())
+                F == MOI.VariableIndex || continue
+                for ci in
+                    MOI.get(s.optimizer, MOI.ListOfConstraintIndices{F,S}())
+                    vi = MOI.VariableIndex(ci.value)
+                    status =
+                        MOI.get(s.optimizer, MOI.VariableBasisStatus(), vi)
+                    status == MOI.BASIC && continue
+                    s.forw_dy[ci] =
+                        get(dc, vi, 0.0) - get(At_dλ, vi, 0.0)
+                end
+            end
         end
     end
     return
